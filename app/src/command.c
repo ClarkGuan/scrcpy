@@ -1,16 +1,22 @@
 #include "command.h"
 
+#include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
+#include "config.h"
 #include "common.h"
-#include "log.h"
-#include "str_util.h"
+#include "util/log.h"
+#include "util/str_util.h"
 
 static const char *adb_command;
 
-static inline const char *get_adb_command(void) {
+static inline const char *
+get_adb_command(void) {
     if (!adb_command) {
         adb_command = getenv("ADB");
         if (!adb_command)
@@ -19,22 +25,61 @@ static inline const char *get_adb_command(void) {
     return adb_command;
 }
 
-static void show_adb_err_msg(enum process_result err) {
+// serialize argv to string "[arg1], [arg2], [arg3]"
+static size_t
+argv_to_string(const char *const *argv, char *buf, size_t bufsize) {
+    size_t idx = 0;
+    bool first = true;
+    while (*argv) {
+        const char *arg = *argv;
+        size_t len = strlen(arg);
+        // count space for "[], ...\0"
+        if (idx + len + 8 >= bufsize) {
+            // not enough space, truncate
+            assert(idx < bufsize - 4);
+            memcpy(&buf[idx], "...", 3);
+            idx += 3;
+            break;
+        }
+        if (first) {
+            first = false;
+        } else {
+            buf[idx++] = ',';
+            buf[idx++] = ' ';
+        }
+        buf[idx++] = '[';
+        memcpy(&buf[idx], arg, len);
+        idx += len;
+        buf[idx++] = ']';
+        argv++;
+    }
+    assert(idx < bufsize);
+    buf[idx] = '\0';
+    return idx;
+}
+
+static void
+show_adb_err_msg(enum process_result err, const char *const argv[]) {
+    char buf[512];
     switch (err) {
         case PROCESS_ERROR_GENERIC:
-            LOGE("Failed to execute adb");
+            argv_to_string(argv, buf, sizeof(buf));
+            LOGE("Failed to execute: %s", buf);
             break;
         case PROCESS_ERROR_MISSING_BINARY:
-            LOGE("'adb' command not found (make it accessible from your PATH "
-                  "or define its full path in the ADB environment variable)");
+            argv_to_string(argv, buf, sizeof(buf));
+            LOGE("Command not found: %s", buf);
+            LOGE("(make 'adb' accessible from your PATH or define its full"
+                 "path in the ADB environment variable)");
             break;
         case PROCESS_SUCCESS:
-            /* do nothing */
+            // do nothing
             break;
     }
 }
 
-process_t adb_execute(const char *serial, const char *const adb_cmd[], int len) {
+process_t
+adb_execute(const char *serial, const char *const adb_cmd[], size_t len) {
     const char *cmd[len + 4];
     int i;
     process_t process;
@@ -49,15 +94,17 @@ process_t adb_execute(const char *serial, const char *const adb_cmd[], int len) 
 
     memcpy(&cmd[i], adb_cmd, len * sizeof(const char *));
     cmd[len + i] = NULL;
-    enum process_result r = cmd_execute(cmd[0], cmd, &process);
+    enum process_result r = cmd_execute(cmd, &process);
     if (r != PROCESS_SUCCESS) {
-        show_adb_err_msg(r);
+        show_adb_err_msg(r, cmd);
         return PROCESS_NONE;
     }
     return process;
 }
 
-process_t adb_forward(const char *serial, uint16_t local_port, const char *device_socket_name) {
+process_t
+adb_forward(const char *serial, uint16_t local_port,
+            const char *device_socket_name) {
     char local[4 + 5 + 1]; // tcp:PORT
     char remote[108 + 14 + 1]; // localabstract:NAME
     sprintf(local, "tcp:%" PRIu16, local_port);
@@ -66,14 +113,17 @@ process_t adb_forward(const char *serial, uint16_t local_port, const char *devic
     return adb_execute(serial, adb_cmd, ARRAY_LEN(adb_cmd));
 }
 
-process_t adb_forward_remove(const char *serial, uint16_t local_port) {
+process_t
+adb_forward_remove(const char *serial, uint16_t local_port) {
     char local[4 + 5 + 1]; // tcp:PORT
     sprintf(local, "tcp:%" PRIu16, local_port);
     const char *const adb_cmd[] = {"forward", "--remove", local};
     return adb_execute(serial, adb_cmd, ARRAY_LEN(adb_cmd));
 }
 
-process_t adb_reverse(const char *serial, const char *device_socket_name, uint16_t local_port) {
+process_t
+adb_reverse(const char *serial, const char *device_socket_name,
+            uint16_t local_port) {
     char local[4 + 5 + 1]; // tcp:PORT
     char remote[108 + 14 + 1]; // localabstract:NAME
     sprintf(local, "tcp:%" PRIu16, local_port);
@@ -82,14 +132,16 @@ process_t adb_reverse(const char *serial, const char *device_socket_name, uint16
     return adb_execute(serial, adb_cmd, ARRAY_LEN(adb_cmd));
 }
 
-process_t adb_reverse_remove(const char *serial, const char *device_socket_name) {
+process_t
+adb_reverse_remove(const char *serial, const char *device_socket_name) {
     char remote[108 + 14 + 1]; // localabstract:NAME
     snprintf(remote, sizeof(remote), "localabstract:%s", device_socket_name);
     const char *const adb_cmd[] = {"reverse", "--remove", remote};
     return adb_execute(serial, adb_cmd, ARRAY_LEN(adb_cmd));
 }
 
-process_t adb_push(const char *serial, const char *local, const char *remote) {
+process_t
+adb_push(const char *serial, const char *local, const char *remote) {
 #ifdef __WINDOWS__
     // Windows will parse the string, so the paths must be quoted
     // (see sys/win/command.c)
@@ -99,7 +151,7 @@ process_t adb_push(const char *serial, const char *local, const char *remote) {
     }
     remote = strquote(remote);
     if (!remote) {
-        free((void *) local);
+        SDL_free((void *) local);
         return PROCESS_NONE;
     }
 #endif
@@ -108,14 +160,15 @@ process_t adb_push(const char *serial, const char *local, const char *remote) {
     process_t proc = adb_execute(serial, adb_cmd, ARRAY_LEN(adb_cmd));
 
 #ifdef __WINDOWS__
-    free((void *) remote);
-    free((void *) local);
+    SDL_free((void *) remote);
+    SDL_free((void *) local);
 #endif
 
     return proc;
 }
 
-process_t adb_install(const char *serial, const char *local) {
+process_t
+adb_install(const char *serial, const char *local) {
 #ifdef __WINDOWS__
     // Windows will parse the string, so the local name must be quoted
     // (see sys/win/command.c)
@@ -129,21 +182,17 @@ process_t adb_install(const char *serial, const char *local) {
     process_t proc = adb_execute(serial, adb_cmd, ARRAY_LEN(adb_cmd));
 
 #ifdef __WINDOWS__
-    free((void *) local);
+    SDL_free((void *) local);
 #endif
 
     return proc;
 }
 
-process_t adb_remove_path(const char *serial, const char *path) {
-    const char *const adb_cmd[] = {"shell", "rm", path};
-    return adb_execute(serial, adb_cmd, ARRAY_LEN(adb_cmd));
-}
-
-SDL_bool process_check_success(process_t proc, const char *name) {
+bool
+process_check_success(process_t proc, const char *name) {
     if (proc == PROCESS_NONE) {
         LOGE("Could not execute \"%s\"", name);
-        return SDL_FALSE;
+        return false;
     }
     exit_code_t exit_code;
     if (!cmd_simple_wait(proc, &exit_code)) {
@@ -152,7 +201,18 @@ SDL_bool process_check_success(process_t proc, const char *name) {
         } else {
             LOGE("\"%s\" exited unexpectedly", name);
         }
-        return SDL_FALSE;
+        return false;
     }
-    return SDL_TRUE;
+    return true;
+}
+
+bool
+is_regular_file(const char *path) {
+    struct stat path_stat;
+    int r = stat(path, &path_stat);
+    if (r) {
+        perror("stat");
+        return false;
+    }
+    return S_ISREG(path_stat.st_mode);
 }

@@ -1,17 +1,27 @@
+// for portability
 #define _POSIX_SOURCE // for kill()
+#define _BSD_SOURCE // for readlink()
+
+// modern glibc will complain without this
+#define _DEFAULT_SOURCE
 
 #include "command.h"
 
+#include "config.h"
+
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <signal.h>
 #include <stdlib.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
-#include "log.h"
 
-enum process_result cmd_execute(const char *path, const char *const argv[], pid_t *pid) {
+#include "util/log.h"
+
+enum process_result
+cmd_execute(const char *const argv[], pid_t *pid) {
     int fd[2];
 
     if (pipe(fd) == -1) {
@@ -42,7 +52,7 @@ enum process_result cmd_execute(const char *path, const char *const argv[], pid_
         // child close read side
         close(fd[0]);
         if (fcntl(fd[1], F_SETFD, FD_CLOEXEC) == 0) {
-            execvp(path, (char *const *)argv);
+            execvp(argv[0], (char *const *)argv);
             if (errno == ENOENT) {
                 ret = PROCESS_ERROR_MISSING_BINARY;
             } else {
@@ -72,19 +82,22 @@ end:
     return ret;
 }
 
-SDL_bool cmd_terminate(pid_t pid) {
+bool
+cmd_terminate(pid_t pid) {
     if (pid <= 0) {
-        LOGC("Requested to kill %d, this is an error. Please report the bug.\n", (int) pid);
+        LOGC("Requested to kill %d, this is an error. Please report the bug.\n",
+             (int) pid);
         abort();
     }
     return kill(pid, SIGTERM) != -1;
 }
 
-SDL_bool cmd_simple_wait(pid_t pid, int *exit_code) {
+bool
+cmd_simple_wait(pid_t pid, int *exit_code) {
     int status;
     int code;
     if (waitpid(pid, &status, 0) == -1 || !WIFEXITED(status)) {
-        // cannot wait, or exited unexpectedly, probably by a signal
+        // could not wait, or exited unexpectedly, probably by a signal
         code = -1;
     } else {
         code = WEXITSTATUS(status);
@@ -93,4 +106,24 @@ SDL_bool cmd_simple_wait(pid_t pid, int *exit_code) {
         *exit_code = code;
     }
     return !code;
+}
+
+char *
+get_executable_path(void) {
+// <https://stackoverflow.com/a/1024937/1987178>
+#ifdef __linux__
+    char buf[PATH_MAX + 1]; // +1 for the null byte
+    ssize_t len = readlink("/proc/self/exe", buf, PATH_MAX);
+    if (len == -1) {
+        perror("readlink");
+        return NULL;
+    }
+    buf[len] = '\0';
+    return SDL_strdup(buf);
+#else
+    // in practice, we only need this feature for portable builds, only used on
+    // Windows, so we don't care implementing it for every platform
+    // (it's useful to have a working version on Linux for debugging though)
+    return NULL;
+#endif
 }
